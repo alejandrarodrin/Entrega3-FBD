@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from bson import ObjectId
+from datetime import datetime
 from dotenv import load_dotenv
 import os
 
@@ -207,13 +208,35 @@ def get_resenas_por_cliente(cliente_id: int):
 
 @app.post("/resenas")
 def crear_resena(resena: dict):
-    resultado = resenas_collection.insert_one(resena)
+    try:
+        # Convertir fecha string a datetime para MongoDB
+        if "fecha" in resena and isinstance(resena["fecha"], str):
+            resena["fecha"] = datetime.fromisoformat(
+                resena["fecha"].replace("Z", "+00:00")
+            )
 
-    nueva_resena = resenas_collection.find_one({
-        "_id": resultado.inserted_id
-    })
+        resena.setdefault("estado", "publicada")
+        resena.setdefault("destacada", False)
+        resena.setdefault("votos_utilidad", 0)
 
-    return convertir_documento(nueva_resena)
+        if "calificacion" not in resena or not (1 <= int(resena["calificacion"]) <= 5):
+            raise HTTPException(status_code=400, detail="La calificación debe estar entre 1 y 5")
+
+        if resenas_collection.find_one({"reserva_id": resena["reserva_id"]}):
+            raise HTTPException(status_code=400, detail="Esa reserva ya tiene una reseña")
+
+        resultado = resenas_collection.insert_one(resena)
+
+        nueva_resena = resenas_collection.find_one({
+            "_id": resultado.inserted_id
+        })
+
+        return convertir_documento(nueva_resena)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.put("/resenas/{resena_id}")
@@ -251,3 +274,49 @@ def eliminar_resena(resena_id: str):
         "estado": "Reseña eliminada correctamente",
         "id": resena_id
     }
+
+@app.put("/resenas/{resena_id}/util")
+def marcar_resena_util(resena_id: str):
+    try:
+        object_id = ObjectId(resena_id)
+    except:
+        raise HTTPException(status_code=400, detail="ID de reseña inválido")
+
+    resultado = resenas_collection.update_one(
+        {"_id": object_id},
+        {"$inc": {"votos_utilidad": 1}}
+    )
+
+    if resultado.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Reseña no encontrada")
+
+    resena_actualizada = resenas_collection.find_one({"_id": object_id})
+    return convertir_documento(resena_actualizada)
+
+
+@app.put("/resenas/{resena_id}/destacar")
+def destacar_resena(resena_id: str):
+    try:
+        object_id = ObjectId(resena_id)
+    except:
+        raise HTTPException(status_code=400, detail="ID de reseña inválido")
+
+    resena = resenas_collection.find_one({"_id": object_id})
+
+    if not resena:
+        raise HTTPException(status_code=404, detail="Reseña no encontrada")
+
+    hotel_id = resena.get("hotel_id")
+
+    resenas_collection.update_many(
+        {"hotel_id": hotel_id},
+        {"$set": {"destacada": False}}
+    )
+
+    resenas_collection.update_one(
+        {"_id": object_id},
+        {"$set": {"destacada": True}}
+    )
+
+    resena_actualizada = resenas_collection.find_one({"_id": object_id})
+    return convertir_documento(resena_actualizada)
