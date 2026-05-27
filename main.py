@@ -6,12 +6,11 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 
-# Cargar variables del archivo .env
 load_dotenv()
 
 app = FastAPI()
 
-# Permitir conexión desde APEX u otros clientes
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,10 +24,10 @@ MONGO_URI = os.environ.get("MONGO_URI")
 MONGO_DB = os.environ.get("MONGO_DB")
 
 if not MONGO_URI:
-    raise Exception("Falta la variable MONGO_URI en el archivo .env")
+    raise Exception("Falta la variable MONGO_URI")
 
 if not MONGO_DB:
-    raise Exception("Falta la variable MONGO_DB en el archivo .env")
+    raise Exception("Falta la variable MONGO_DB")
 
 client = MongoClient(MONGO_URI)
 db = client[MONGO_DB]
@@ -101,9 +100,6 @@ def get_usuario_por_id(usuario_id: int):
     return convertir_documento(usuario)
 
 
-# =========================
-# HOTELES
-# =========================
 
 @app.get("/hoteles")
 def get_hoteles():
@@ -127,9 +123,6 @@ def get_hoteles_por_ciudad(ciudad: str):
     return [convertir_documento(hotel) for hotel in hoteles]
 
 
-# =========================
-# RESEÑAS
-# =========================
 
 @app.get("/resenas-apex")
 def get_resenas_apex():
@@ -331,3 +324,187 @@ def destacar_resena(resena_id: str):
 
     resena_actualizada = resenas_collection.find_one({"_id": object_id})
     return convertir_documento(resena_actualizada)
+
+
+@app.get("/rfc/top-hoteles")
+def rfc_top_hoteles(fecha_inicio: str = "2026-01-01", fecha_fin: str = "2026-12-31"):
+    try:
+        inicio = datetime.fromisoformat(fecha_inicio)
+        fin = datetime.fromisoformat(fecha_fin)
+
+        pipeline = [
+            {
+                "$match": {
+                    "estado": "publicada",
+                    "fecha": {
+                        "$gte": inicio,
+                        "$lte": fin
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$hotel_id",
+                    "ciudad_hotel": { "$first": "$ciudad_hotel" },
+                    "promedio_calificacion": { "$avg": "$calificacion" },
+                    "total_resenas": { "$sum": 1 }
+                }
+            },
+            {
+                "$sort": {
+                    "promedio_calificacion": -1,
+                    "total_resenas": -1
+                }
+            },
+            {
+                "$limit": 10
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "hotel_id": "$_id",
+                    "ciudad_hotel": 1,
+                    "promedio_calificacion": { "$round": ["$promedio_calificacion", 2] },
+                    "total_resenas": 1
+                }
+            }
+        ]
+
+        return list(resenas_collection.aggregate(pipeline))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/rfc/evolucion-hotel/{hotel_id}")
+def rfc_evolucion_hotel(hotel_id: int, anio: int = 2026):
+    try:
+        inicio = datetime(anio, 1, 1)
+        fin = datetime(anio, 12, 31, 23, 59, 59)
+
+        pipeline = [
+            {
+                "$match": {
+                    "hotel_id": hotel_id,
+                    "estado": "publicada",
+                    "fecha": {
+                        "$gte": inicio,
+                        "$lte": fin
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": {
+                        "anio": { "$year": "$fecha" },
+                        "mes": { "$month": "$fecha" }
+                    },
+                    "promedio_calificacion": { "$avg": "$calificacion" },
+                    "total_resenas": { "$sum": 1 }
+                }
+            },
+            {
+                "$sort": {
+                    "_id.anio": 1,
+                    "_id.mes": 1
+                }
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "anio": "$_id.anio",
+                    "mes": "$_id.mes",
+                    "promedio_calificacion": { "$round": ["$promedio_calificacion", 2] },
+                    "total_resenas": 1
+                }
+            }
+        ]
+
+        return list(resenas_collection.aggregate(pipeline))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/rfc/comparativo-ciudad/{ciudad}")
+def rfc_comparativo_ciudad(ciudad: str):
+    try:
+        pipeline = [
+            {
+                "$match": {
+                    "ciudad_hotel": ciudad,
+                    "estado": "publicada"
+                }
+            },
+            {
+                "$group": {
+                    "_id": "$hotel_id",
+                    "promedio_calificacion": { "$avg": "$calificacion" },
+                    "total_resenas": { "$sum": 1 },
+                    "resenas_con_respuesta": {
+                        "$sum": {
+                            "$cond": [
+                                { "$ifNull": ["$respuesta_admin", False] },
+                                1,
+                                0
+                            ]
+                        }
+                    },
+                    "resenas_destacadas": {
+                        "$sum": {
+                            "$cond": ["$destacada", 1, 0]
+                        }
+                    }
+                }
+            },
+            {
+                "$addFields": {
+                    "porcentaje_respuesta_admin": {
+                        "$multiply": [
+                            { "$divide": ["$resenas_con_respuesta", "$total_resenas"] },
+                            100
+                        ]
+                    },
+                    "porcentaje_destacadas": {
+                        "$multiply": [
+                            { "$divide": ["$resenas_destacadas", "$total_resenas"] },
+                            100
+                        ]
+                    }
+                }
+            },
+            {
+                "$group": {
+                    "_id": None,
+                    "hoteles": { "$push": "$$ROOT" },
+                    "promedio_ciudad": { "$avg": "$promedio_calificacion" }
+                }
+            },
+            {
+                "$unwind": "$hoteles"
+            },
+            {
+                "$project": {
+                    "_id": 0,
+                    "hotel_id": "$hoteles._id",
+                    "promedio_calificacion": { "$round": ["$hoteles.promedio_calificacion", 2] },
+                    "total_resenas": "$hoteles.total_resenas",
+                    "porcentaje_respuesta_admin": { "$round": ["$hoteles.porcentaje_respuesta_admin", 2] },
+                    "porcentaje_destacadas": { "$round": ["$hoteles.porcentaje_destacadas", 2] },
+                    "promedio_ciudad": { "$round": ["$promedio_ciudad", 2] },
+                    "por_debajo_promedio_ciudad": {
+                        "$lt": ["$hoteles.promedio_calificacion", "$promedio_ciudad"]
+                    }
+                }
+            },
+            {
+                "$sort": {
+                    "promedio_calificacion": -1
+                }
+            }
+        ]
+
+        return list(resenas_collection.aggregate(pipeline))
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
