@@ -39,22 +39,30 @@ hoteles_collection = db["hoteles"]
 resenas_collection = db["resenas"]
 
 
-# Función para convertir ObjectId y fechas a formato JSON válido
 def convertir_documento(documento):
     if documento is None:
         return None
 
-    documento["_id"] = str(documento["_id"])
+    doc = dict(documento)
 
-    if "fecha" in documento:
-        documento["fecha"] = documento["fecha"].isoformat()
+    if "_id" in doc:
+        doc["_id"] = str(doc["_id"])
 
-    if "respuesta_admin" in documento:
-        respuesta_admin = documento["respuesta_admin"]
-        if "fecha_respuesta" in respuesta_admin:
-            respuesta_admin["fecha_respuesta"] = respuesta_admin["fecha_respuesta"].isoformat()
+    if "fecha" in doc and hasattr(doc["fecha"], "isoformat"):
+        doc["fecha"] = doc["fecha"].isoformat()
 
-    return documento
+    if "fecha_actualizacion" in doc and hasattr(doc["fecha_actualizacion"], "isoformat"):
+        doc["fecha_actualizacion"] = doc["fecha_actualizacion"].isoformat()
+
+    if "respuesta_admin" in doc and isinstance(doc["respuesta_admin"], dict):
+        respuesta = dict(doc["respuesta_admin"])
+
+        if "fecha_respuesta" in respuesta and hasattr(respuesta["fecha_respuesta"], "isoformat"):
+            respuesta["fecha_respuesta"] = respuesta["fecha_respuesta"].isoformat()
+
+        doc["respuesta_admin"] = respuesta
+
+    return doc
 
 
 @app.get("/")
@@ -154,8 +162,11 @@ def get_resenas_apex():
 
 @app.get("/resenas")
 def get_resenas():
-    resenas = list(resenas_collection.find())
-    return [convertir_documento(resena) for resena in resenas]
+    try:
+        resenas = list(resenas_collection.find())
+        return [convertir_documento(resena) for resena in resenas]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/resenas/publicadas")
