@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 import os
 
 # Cargar variables del archivo .env
-load_dotenv("")
+load_dotenv()
 
 app = FastAPI()
 
